@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+aiomysql
+requests
+apscheduler
+python-jose[cryptography]
+passlib[bcrypt]
+pydantic
+python-multipart
+httpx
