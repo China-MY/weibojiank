@@ -77,18 +77,7 @@ async def crawl_job():
                 if account.last_update_time < threshold_dt:
                     account.status = "expired"
                     await db.commit()
-            if webhook_url:
-                try:
-                    now = datetime.now(ZoneInfo('Asia/Shanghai')).replace(tzinfo=None)
-                    overdue_days = 0
-                    if account.last_update_time:
-                        overdue_days = (now - account.last_update_time).days
-                    trigger_push = (not last_update_time) or (account.status == "expired")
-                    if trigger_push:
-                        content = f"{account.screen_name} 异常，已超过{max(overdue_days, days_threshold)}天未更新；最后更新时间：{account.last_update_time}"
-                        requests.post(webhook_url, json={"msgtype":"text","text":{"content":content}}, timeout=10)
-                except Exception:
-                    pass
+
             
             # Respect the 5s interval rule
             await asyncio.sleep(5)
