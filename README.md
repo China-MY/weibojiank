@@ -54,6 +54,9 @@
 - [x] UI 响应式优化 (PC端适配: 登录页, 仪表盘表格/统计卡片)
 - [x] 全局布局修复 (修复 Flex 布局导致的内容截断问题，标准化字体与 Meta 标签)
 - [x] 爬虫逻辑增强 (动态获取 container ID, 错误处理)
+- [x] 增加异常账号刷新时的后端日志打印功能 (方便排查爬虫失败原因)
+- [x] 修复超期天数计算逻辑 (精确到日期，避免因时间差导致少算一天)
+- [x] 修复前端超期提醒显示“0天”的Bug (统一使用日期差计算)
 - [ ] 测试与部署 (Pending proxy configuration for crawler)
 
 ### 3.2 问题追踪
@@ -70,10 +73,13 @@
 - **UI Changes**: Dashboard Table now supports horizontal scrolling (`scroll={{ x: 'max-content' }}`) and responsive columns. Login card adapts to screen width.
  - **存储模式**: 新增 MySQL 支持，配置方式：在项目根目录创建 `.env`（不提交）并设置：
    - `DB_DRIVER=mysql`
-   - `DB_HOST=222.184.49.22`
-   - `DB_PORT=3307`
-   - `DB_NAME=weibopyjiank`
-   - `DB_USER=root`
+   - `DB_HOST=ip`（请替换为您的 MySQL 服务器 IP）
+   - `DB_PORT=port`（请替换为您的 MySQL 服务器端口，默认 3306）
+   - `DB_NAME=weibopyjiank`（请替换为您的数据库名称）
+   - `DB_USER=username`（请替换为您的 MySQL 用户名）
    - `DB_PASSWORD=******`（请使用您提供的密码，勿提交）
    - 安装依赖：`pip install -r backend/requirements.txt`
    - 启动后端自动建表：`uvicorn app.main:app --reload`
+- **日志增强**: 在手动刷新 (`/check/{uid}`) 和定时任务 (`scheduler.py`) 中增加了对爬取失败的错误日志输出 (Log Level: ERROR)，包含账号名称、UID 和具体错误信息。
+- **逻辑修复**: 修正了超期未更新天数的计算方式，统一采用 `(当前日期 - 最后更新日期).days`，忽略具体时间差异，解决“推送天数比实际少一天”的问题。
+- **前端修复**: 同步修改了前端 `Dashboard.jsx` 中的状态判定与提示文案逻辑，使用 `dayjs().startOf('day')` 进行比较，解决了页面上出现“已超过0天”的显示异常。

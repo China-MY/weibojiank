@@ -12,6 +12,10 @@ import json
 from pathlib import Path
 import requests
 from sqlalchemy import update
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/weibo",
@@ -30,13 +34,15 @@ async def read_expired_accounts(days: int = 3, db: AsyncSession = Depends(databa
     Get accounts that haven't updated for 'days' days.
     """
     accounts = await crud.get_weibo_accounts(db, limit=1000)
-    expired_accounts = []
     now = datetime.now(ZoneInfo('Asia/Shanghai')).replace(tzinfo=None)
+    expired_accounts = []
+    
     for account in accounts:
-        ref = account.last_check_time or now
-        threshold_dt = ref - timedelta(days=days)
-        if account.last_update_time and account.last_update_time < threshold_dt:
-            expired_accounts.append(account)
+        # Calculate days based on date only
+        if account.last_update_time:
+            delta_days = (now.date() - account.last_update_time.date()).days
+            if delta_days >= days:
+                expired_accounts.append(account)
             
     return expired_accounts
 
@@ -49,14 +55,13 @@ async def read_expired_report(days: int = 0, db: AsyncSession = Depends(database
     now = datetime.now(ZoneInfo('Asia/Shanghai')).replace(tzinfo=None)
     report = []
     for a in accounts:
-        ref = a.last_check_time or now
-        threshold_dt = ref - timedelta(days=threshold_days)
-        if a.last_update_time and a.last_update_time < threshold_dt:
-            overdue_days = (ref - a.last_update_time).days
-            report.append({
-                "screen_name": a.screen_name,
-                "overdue_days": overdue_days
-            })
+        if a.last_update_time:
+            overdue_days = (now.date() - a.last_update_time.date()).days
+            if overdue_days >= threshold_days:
+                report.append({
+                    "screen_name": a.screen_name,
+                    "overdue_days": overdue_days
+                })
     return report
 
 @router.post("/check/{uid}")
@@ -69,14 +74,41 @@ async def check_account(uid: str, db: AsyncSession = Depends(database.get_db), c
     proxies = []
     if proxies_val and proxies_val.value:
         proxies = [p.strip() for p in proxies_val.value.splitlines() if p.strip()]
-    last_update_time, message = fetch_weibo_updates(uid, cookie, proxies)
+    
+    # Run fetch in thread to avoid blocking event loop
+    last_update_time, message = await asyncio.to_thread(fetch_weibo_updates, uid, cookie, proxies)
+    
     account = await crud.get_weibo_account_by_uid(db, uid)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    
     if last_update_time:
         account.last_update_time = last_update_time
         account.status = "normal"
+    else:
+        logger.error(f"Check failed for {account.screen_name} ({uid}): {message}")
+    
     account.last_check_time = datetime.now(ZoneInfo('Asia/Shanghai')).replace(tzinfo=None)
+    
+    # Create Log
+    log = models.CrawlLog(
+        account_id=account.id,
+        status="success" if last_update_time else "failure",
+        message=message
+    )
+    db.add(log)
+    
+    # Check expiry
+    days_threshold_cfg = await db.execute(select(SystemConfig).where(SystemConfig.key == "expired_days"))
+    cfg_val = days_threshold_cfg.scalar_one_or_none()
+    days_threshold = int(cfg_val.value) if cfg_val and cfg_val.value else 1
+    
+    if account.last_update_time:
+        # Check expiry based on date
+        delta_days = (datetime.now(ZoneInfo('Asia/Shanghai')).date() - account.last_update_time.date()).days
+        if delta_days >= days_threshold:
+            account.status = "expired"
+            
     await db.commit()
     await db.refresh(account)
     return {"last_update_time": account.last_update_time, "message": message}
@@ -150,8 +182,10 @@ async def push_summary(days: int | None = Query(None), db: AsyncSession = Depend
     abn = []
     nor = []
     for a in accounts:
-        ref = a.last_check_time or now
-        od = (ref - a.last_update_time).days if a.last_update_time else threshold_days
+        od = 0
+        if a.last_update_time:
+            od = (now.date() - a.last_update_time.date()).days
+        
         if (not a.last_update_time) or od >= threshold_days:
             abn.append(f"{a.screen_name}：已超过{od}天未更新；最后更新时间：{a.last_update_time}")
         else:

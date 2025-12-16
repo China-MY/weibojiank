@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import { Layout, Menu, Table, Tag, Button, Modal, Form, Input, InputNumber, message, Card, Row, Col, Statistic, Select, Tooltip, TimePicker } from 'antd';
 import { LogoutOutlined, ReloadOutlined, PlusOutlined, DeleteOutlined, SettingOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { getWeiboList, getExpiredWeiboList, addWeiboAccount, removeWeiboAccount, getSystemConfig, saveSystemConfig, getExpiredReport, checkAccount, setBatchInterval, testWebhook, updateUserCredentials, getMe } from '../api/endpoints';
+import { getWeiboList, getExpiredWeiboList, addWeiboAccount, removeWeiboAccount, getSystemConfig, saveSystemConfig, getExpiredReport, checkAccount, setBatchInterval, testWebhook, updateUserCredentials, getMe, pushSummary } from '../api/endpoints';
 
 const { Header, Content } = Layout;
 
@@ -132,6 +132,20 @@ const Dashboard = () => {
         try {
           const res = await checkAccount(item.uid);
           const reason = res?.data?.message ? String(res.data.message) : '';
+          
+          // Update local state immediately
+          setAccounts(prev => prev.map(acc => {
+            if (acc.uid === item.uid) {
+                return {
+                    ...acc,
+                    last_update_time: res.data.last_update_time || acc.last_update_time,
+                    last_check_time: new Date().toISOString(),
+                    status: res.data.last_update_time ? 'normal' : acc.status
+                };
+            }
+            return acc;
+          }));
+
           setProgress(prev => ({ ...prev, [item.uid]: { status: '完成', reason } }));
         } catch (e) {
           const reason = e?.response?.data?.detail ? String(e.response.data.detail) : (e?.message ? String(e.message) : '未知错误');
@@ -256,15 +270,15 @@ const Dashboard = () => {
   };
 
   const computeStatusLabel = (record) => {
-    const now = Date.now();
-    const thresholdMs = expiredDays * 24 * 3600 * 1000;
+    const thresholdDays = expiredDays;
     let isOverdue = false;
     if (!record.last_update_time) {
       isOverdue = true;
     } else {
-      const tsUpdate = new Date(record.last_update_time).getTime();
-      const tsCheck = record.last_check_time ? new Date(record.last_check_time).getTime() : now;
-      isOverdue = (tsCheck - tsUpdate) >= thresholdMs;
+      const updateDate = dayjs(record.last_update_time).startOf('day');
+      const checkDate = record.last_check_time ? dayjs(record.last_check_time).startOf('day') : dayjs().startOf('day');
+      const diffDays = checkDate.diff(updateDate, 'day');
+      isOverdue = diffDays >= thresholdDays;
     }
     if (isOverdue) return '异常';
     let label = '正常';
@@ -336,18 +350,17 @@ const Dashboard = () => {
       dataIndex: 'status',
       key: 'status',
       render: (_, record) => {
-        const now = Date.now();
-        const thresholdMs = expiredDays * 24 * 3600 * 1000;
+        const thresholdDays = expiredDays;
         let isOverdue = false;
         let tip = '';
         if (!record.last_update_time) {
           isOverdue = true;
           tip = '未获取到最后更新时间';
         } else {
-          const tsUpdate = new Date(record.last_update_time).getTime();
-          const tsCheck = record.last_check_time ? new Date(record.last_check_time).getTime() : now;
-          const diffDays = Math.floor((tsCheck - tsUpdate) / (24 * 3600 * 1000));
-          isOverdue = (tsCheck - tsUpdate) >= thresholdMs;
+          const updateDate = dayjs(record.last_update_time).startOf('day');
+          const checkDate = record.last_check_time ? dayjs(record.last_check_time).startOf('day') : dayjs().startOf('day');
+          const diffDays = checkDate.diff(updateDate, 'day');
+          isOverdue = diffDays >= thresholdDays;
           if (isOverdue) tip = `超过${diffDays}天未更新`;
         }
         if (isOverdue) return <Tooltip title={tip}><Tag color="red">异常</Tag></Tooltip>;
@@ -415,7 +428,7 @@ const Dashboard = () => {
             </Col>
             <Col xs={24} sm={8}>
               <Card>
-                <Statistic title="正常运行" value={accounts.filter(a => a.status === 'normal').length} styles={{ content: { color: '#3f8600' } }} />
+                <Statistic title="正常运行" value={accounts.length - expiredAccounts.length} styles={{ content: { color: '#3f8600' } }} />
               </Card>
             </Col>
           </Row>
@@ -473,15 +486,25 @@ const Dashboard = () => {
           />
 
           <div style={{ marginTop: 16, background:'#fff1f0', border:'1px solid #ffa39e', borderRadius:8, padding:16 }}>
-            <div style={{ fontWeight: 700, marginBottom: 12, color:'#cf1322', display:'flex', alignItems:'center' }}>
-              <ExclamationCircleOutlined style={{ marginRight:8 }} />
-              超期未更新提醒
+            <div style={{ fontWeight: 700, marginBottom: 12, color:'#cf1322', display:'flex', alignItems:'center', justifyContent: 'space-between' }}>
+              <div style={{ display:'flex', alignItems:'center' }}>
+                <ExclamationCircleOutlined style={{ marginRight:8 }} />
+                超期未更新提醒
+              </div>
+              <Button size="small" type="primary" danger onClick={async () => {
+                try {
+                  await pushSummary(expiredDays);
+                  message.success('汇总信息已推送');
+                } catch (e) {
+                  message.error('推送失败');
+                }
+              }}>推送汇总</Button>
             </div>
             {expiredAccounts.length === 0 ? (
               <div style={{ color: '#999' }}>暂无超期提醒</div>
             ) : (
               expiredAccounts.map(a => {
-                const days = a.last_update_time ? Math.floor((Date.now() - new Date(a.last_update_time).getTime())/(24*3600*1000)) : expiredDays;
+                const days = a.last_update_time ? dayjs().startOf('day').diff(dayjs(a.last_update_time).startOf('day'), 'day') : expiredDays;
                 return (
                   <div key={a.id} style={{ marginBottom:8, display:'flex', alignItems:'center' }}>
                     <ExclamationCircleOutlined style={{ color:'#cf1322', marginRight:8 }} />

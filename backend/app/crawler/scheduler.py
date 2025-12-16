@@ -40,14 +40,13 @@ async def crawl_job():
             
             if account.last_check_time and (datetime.utcnow() - account.last_check_time).total_seconds() < (account.check_interval or 3600):
                 continue
-            last_update_time, message = fetch_weibo_updates(account.uid, cookie, proxies)
+            last_update_time, message = await asyncio.to_thread(fetch_weibo_updates, account.uid, cookie, proxies)
 
             
             status = "normal"
             if not last_update_time:
                 status = "error"
-                # If error, maybe keep old time or set to None? 
-                # We'll just log it.
+                logger.error(f"Crawl failed for {account.screen_name} ({account.uid}): {message}")
             else:
                 # Check if expired (e.g. > N days)
                 # This logic can be done here or in a separate check.
@@ -73,8 +72,8 @@ async def crawl_job():
             cfg_val = days_threshold_cfg.scalar_one_or_none()
             days_threshold = int(cfg_val.value) if cfg_val and cfg_val.value else 1
             if account.last_update_time:
-                threshold_dt = datetime.now(ZoneInfo('Asia/Shanghai')).replace(tzinfo=None) - timedelta(days=days_threshold)
-                if account.last_update_time < threshold_dt:
+                delta_days = (datetime.now(ZoneInfo('Asia/Shanghai')).date() - account.last_update_time.date()).days
+                if delta_days >= days_threshold:
                     account.status = "expired"
                     await db.commit()
 
@@ -106,8 +105,10 @@ def start_scheduler():
                 threshold_days = int(days_val.value) if days_val and days_val.value else 1
                 lines = []
                 for a in accounts:
-                    if a.last_update_time and (now - a.last_update_time).days >= threshold_days:
-                        lines.append(f"{a.screen_name}：已超过{(now - a.last_update_time).days}天未更新；最后更新时间：{a.last_update_time}")
+                    if a.last_update_time:
+                        od = (now.date() - a.last_update_time.date()).days
+                        if od >= threshold_days:
+                            lines.append(f"{a.screen_name}：已超过{od}天未更新；最后更新时间：{a.last_update_time}")
                 content = "每日提醒\n" + ("\n".join(lines) if lines else "暂无超期提醒")
                 requests.post(val_url.value, json={"msgtype":"text","text":{"content":content}}, timeout=10)
             except Exception:
